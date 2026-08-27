@@ -466,6 +466,18 @@ def api_debug_transfer(url: str, session_id: str = "", email: str = "",
             "randsk_head": randsk[:24], "results": out}
 
 
+@app.get("/api/debug/dns")
+def api_debug_dns(host: str):
+    """Resolve a hostname from the server's perspective."""
+    import socket
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+        return {"ok": True, "host": host,
+                "ips": sorted({i[4][0] for i in infos})}
+    except Exception as ex:
+        return {"ok": False, "host": host, "error": str(ex)}
+
+
 @app.get("/api/debug/cookies")
 def api_debug_cookies(url: str = "", session_id: str = "",
                       email: str = "", password: str = ""):
