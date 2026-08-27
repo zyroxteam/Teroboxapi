@@ -225,7 +225,7 @@ def _der_skip_peek(b):
 # TeraBox API session
 # ----------------------------------------------------------------------------
 class TBox:
-    def __init__(self, share_url):
+    def __init__(self, share_url, host=None):
         self.jar = CookieJar()
         self.op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
         self.host = None
@@ -234,6 +234,7 @@ class TBox:
         self.final_url = None
         self.pp1 = self.pp2 = None
         self.rsa_n = self.rsa_e = None
+        self.force_host = host or None
         self._resolve_share(share_url)
 
     def _http(self, method, url, data=None, headers=None, referer=None, timeout=45):
@@ -253,6 +254,32 @@ class TBox:
 
     def _resolve_share(self, share_url):
         """Follow the share link to the final host and extract page tokens."""
+        if self.force_host:
+            # Pin every request to the session's host so cookies match the login.
+            m = re.search(r"/s/([A-Za-z0-9]+)", share_url)
+            surl = m.group(1) if m else ""
+            if "surl=" in share_url:
+                surl = share_url.split("surl=")[-1].split("&")[0]
+            if surl.startswith("1") and len(surl) > 20:
+                surl = surl[1:]
+            target = f"https://{self.force_host}/sharing/link?surl={surl}"
+            s, html, final = self._http("GET", target, headers={"Accept": "text/html"})
+            if s == 200:
+                txt = html.decode("utf-8", "ignore")
+                m = re.search(r'fn%28%22([A-Fa-f0-9]+)', txt)
+                self.js_token = m.group(1) if m else ""
+                m = re.search(r'"pcftoken":"([a-f0-9]{32})"', txt)
+                self.pcf_token = m.group(1) if m else ""
+                if not (self.js_token and self.pcf_token):
+                    m = re.search(r'jsToken["\s:=]+([A-Fa-f0-9]{32,128})', txt)
+                    self.js_token = self.js_token or (m.group(1) if m else "")
+                    m = re.search(r'pcftoken["\s:=]+([a-f0-9]{32})', txt)
+                    self.pcf_token = self.pcf_token or (m.group(1) if m else "")
+                if self.js_token and self.pcf_token:
+                    self.host = self.force_host
+                    self.final_url = final
+                    return
+            # forced host failed -> fall through to the redirect chain
         s, html, final = self._http("GET", share_url, headers={"Accept": "text/html"})
         if s != 200:
             die(f"share page HTTP {s} (link may be dead)")

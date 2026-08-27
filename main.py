@@ -122,17 +122,18 @@ def _new_sid(rec: dict) -> str:
 
 
 def _get_creds(body_session: str, body_email: str, body_password: str):
-    """Return (email, password, ndus) from a session id or inline creds."""
+    """Return (email, password, ndus, host) from a session id or inline creds."""
     if body_session:
         rec = SESSIONS.get(body_session)
         if not rec:
             raise HTTPException(401, "unknown or expired session_id — call /api/login first")
-        return rec.get("email", ""), rec.get("password", ""), rec.get("ndus", "")
+        return rec.get("email", ""), rec.get("password", ""), rec.get("ndus", ""), rec.get("host", "")
     if body_email and body_password:
         # reuse the cached ndus for this account if the password matches
         rec = ACCOUNTS.get(body_email)
-        ndus = rec.get("ndus", "") if rec and rec.get("password") == body_password else ""
-        return body_email, body_password, ndus
+        if rec and rec.get("password") == body_password:
+            return body_email, body_password, rec.get("ndus", ""), rec.get("host", "")
+        return body_email, body_password, "", ""
     raise HTTPException(400, "provide session_id (from /api/login) or email+password")
 
 
@@ -285,8 +286,8 @@ def _dlink_with_fallback(tbox: TBox, data: dict, fid, name: str = ""):
 def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
                     email: str = "", password: str = ""):
     """Diagnose the whole dlink chain: direct -> transfer -> filemetas."""
-    e, p, n = _get_creds(session_id, email, password)
-    tbox = TBox(url)
+    e, p, n, h = _get_creds(session_id, email, password)
+    tbox = TBox(url, host=h or None)
     try:
         _ensure_login(tbox, e, p, n)
         data = tbox.resolve_share()
@@ -316,12 +317,12 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
                   email: str = "", password: str = ""):
     """Fire an arbitrary GET at a whitelisted TeraBox API with session cookies.
     Placeholders in `extra`: {sign} {ts} {surl} {fid}"""
-    e, p, n = _get_creds(session_id, email, password)
+    e, p, n, h = _get_creds(session_id, email, password)
     allowed = {"/share/list", "/api/list", "/api/filemetas", "/api/download",
                "/file/get_new_download_url", "/share/verify", "/api/shorturlinfo"}
     if path not in allowed:
         raise HTTPException(400, f"path not allowed; one of {sorted(allowed)}")
-    tbox = TBox(url)
+    tbox = TBox(url, host=h or None)
     try:
         _ensure_login(tbox, e, p, n)
         data = tbox.resolve_share()
@@ -342,9 +343,9 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
     return {"http": s, "requested": full[:300], "body": body[:2000]}
 
 
-def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True):
+def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True, host: str = ""):
     try:
-        tbox = TBox(url)
+        tbox = TBox(url, host=host or None)
         _ensure_login(tbox, email, password, ndus)
         data = tbox.resolve_share()
     except core.TBoxError as e:
@@ -391,21 +392,21 @@ def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_lin
 
 @app.post("/api/resolve")
 def api_resolve(req: ResolveReq):
-    email, password, ndus = _get_creds(req.session_id, req.email, req.password)
-    return _resolve_with_creds(req.url, email, password, ndus)
+    email, password, ndus, host = _get_creds(req.session_id, req.email, req.password)
+    return _resolve_with_creds(req.url, email, password, ndus, host=host)
 
 
 @app.get("/api/links")
 def api_links(url: str, session_id: str = "", email: str = "", password: str = ""):
-    e, p, n = _get_creds(session_id, email, password)
-    return _resolve_with_creds(url, e, p, n)
+    e, p, n, h = _get_creds(session_id, email, password)
+    return _resolve_with_creds(url, e, p, n, host=h)
 
 
 @app.get("/api/download")
 def api_download(url: str, fs_id: str = "", session_id: str = "",
                  email: str = "", password: str = ""):
-    e, p, n = _get_creds(session_id, email, password)
-    tbox = TBox(url)
+    e, p, n, h = _get_creds(session_id, email, password)
+    tbox = TBox(url, host=h or None)
     try:
         _ensure_login(tbox, e, p, n)
         data = tbox.resolve_share()
