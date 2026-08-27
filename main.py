@@ -143,6 +143,7 @@ def _ensure_login(tbox: TBox, email: str, password: str, ndus: str, cookies: lis
         tbox.set_ndus(ndus)
         if cookies:
             tbox.jar_load(cookies)
+        tbox.refresh_tokens()  # session-bound jsToken for user APIs
         return True
     if email and password:
         ok, msg = tbox.login_full(email, password)

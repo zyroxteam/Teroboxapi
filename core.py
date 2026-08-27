@@ -536,6 +536,34 @@ class TBox:
             except Exception as e:
                 print(f"[jar_load] skip {c.get('name')}: {e}", flush=True)
 
+    def refresh_tokens(self):
+        """Re-fetch the share page WITH session cookies — user APIs need a
+        jsToken minted for the logged-in session, not an anonymous one."""
+        if not self.final_url:
+            return False
+        try:
+            s, html, final = self._http("GET", self.final_url,
+                                        headers={"Accept": "text/html"})
+        except Exception:
+            return False
+        if s != 200:
+            return False
+        txt = html.decode("utf-8", "ignore")
+        m = re.search(r'fn%28%22([A-Fa-f0-9]+)', txt)
+        tok = m.group(1) if m else ""
+        m = re.search(r'"pcftoken":"([a-f0-9]{32})"', txt)
+        pcf = m.group(1) if m else ""
+        if not (tok and pcf):
+            m2 = re.search(r'jsToken["\s:=]+([A-Fa-f0-9]{32,128})', txt)
+            tok = tok or (m2.group(1) if m2 else "")
+            m2 = re.search(r'pcftoken["\s:=]+([a-f0-9]{32})', txt)
+            pcf = pcf or (m2.group(1) if m2 else "")
+        if tok:
+            self.js_token = tok
+        if pcf:
+            self.pcf_token = pcf
+        return bool(tok)
+
     def resolve_share(self):
         """Steps 1-3: shorturlinfo -> file list + sign."""
         surl = self.final_url.split("surl=")[-1].split("&")[0] if "surl=" in self.final_url else ""
