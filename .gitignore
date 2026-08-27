@@ -5,3 +5,8 @@ venv/
 .env
 node_modules/
 *.log
+
+# runtime credential stores — never commit
+sessions.json
+accounts.json
+*.tmp

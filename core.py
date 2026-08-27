@@ -411,7 +411,9 @@ class TBox:
                 if ndus:
                     return True, "ok"
                 return False, f"login response without ndus: {resp}"
-            if resp.get("errmsg") == "dragdrop" or err == 460030:
+            if (resp.get("errmsg") == "dragdrop" or err in (460030, 460020)
+                    or "dragdrop" in str(resp.get("errmsg", ""))
+                    or "need verify" in str(resp.get("errmsg", ""))):
                 logid = resp.get("request_id_string") or resp.get("request_id")
                 print(f"  [captcha] attempt {attempt}/{max_captchas} ...", flush=True)
                 ok, tok = self.solve_captcha_once(logid)
@@ -420,7 +422,7 @@ class TBox:
                     err2 = resp2.get("errno", resp2.get("code"))
                     if err2 == 0 or _cookie(self.jar, "ndus"):
                         return True, "ok (captcha passed)"
-                    if err2 == 460030:
+                    if err2 in (460030, 460020):
                         # try token in the other field
                         pre2 = self._post("/passport/prelogin", self._form(email=email))["data"]
                         resp3 = self._login_attempt(email, password, pre2, use_captcha="vcode",

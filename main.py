@@ -12,11 +12,13 @@ Endpoints
   GET  /api/links?url=&session_id=...            -> {files:[{name,dlink}]}
   GET  /api/download?url=&fs_id=&session_id=...  -> raw file stream (or email/password)
 
-Sessions are in-memory (single instance). Pass session_id, or email+password,
-whichever is convenient.
+Sessions persist to disk (sessions.json + accounts.json): login once, restarts
+keep working. Only a fresh redeploy clears them (ephemeral filesystem) — then
+/api/login once again. Pass session_id, or email+password, whichever is convenient.
 """
 
 import io
+import json
 import os
 import time
 import uuid
@@ -41,8 +43,52 @@ app.add_middleware(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
 
+# ---- persistent session / account store ----------------------------------
 # session_id -> {email, password, ndus, host}
-SESSIONS: dict = {}
+# email      -> {password, ndus, host, updated}   (account cache)
+# Both are saved to disk, so a restart/crash does NOT log you out.
+# Only a fresh redeploy (ephemeral filesystem) clears them.
+DATA_DIR = os.path.dirname(os.path.abspath(__file__))
+SESSIONS_FILE = os.environ.get("SESSIONS_FILE", os.path.join(DATA_DIR, "sessions.json"))
+ACCOUNTS_FILE = os.environ.get("ACCOUNTS_FILE", os.path.join(DATA_DIR, "accounts.json"))
+
+
+def _load_json(path: str, fallback: dict) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else fallback
+    except Exception:
+        return fallback
+
+
+def _store_json(path: str, obj: dict):
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=1)
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"[store] save {os.path.basename(path)} failed: {e}", flush=True)
+
+
+SESSIONS: dict = _load_json(SESSIONS_FILE, {})
+ACCOUNTS: dict = _load_json(ACCOUNTS_FILE, {})
+print(f"[store] restored {len(SESSIONS)} session(s), {len(ACCOUNTS)} account(s)", flush=True)
+
+
+def _remember_account(email: str, password: str, ndus: str, host: str):
+    """Cache a successful login so the ndus cookie is reused without re-login."""
+    if not email:
+        return
+    ACCOUNTS[email] = {"password": password, "ndus": ndus, "host": host,
+                       "updated": int(time.time())}
+    _store_json(ACCOUNTS_FILE, ACCOUNTS)
+
+
+def _mask(email: str) -> str:
+    name, _, dom = email.partition("@")
+    return (name[:2] + "***@" + dom) if dom else "***"
 
 
 class LoginReq(BaseModel):
@@ -71,6 +117,7 @@ class ResolveReq(BaseModel):
 def _new_sid(rec: dict) -> str:
     sid = uuid.uuid4().hex
     SESSIONS[sid] = rec
+    _store_json(SESSIONS_FILE, SESSIONS)
     return sid
 
 
@@ -82,7 +129,10 @@ def _get_creds(body_session: str, body_email: str, body_password: str):
             raise HTTPException(401, "unknown or expired session_id — call /api/login first")
         return rec.get("email", ""), rec.get("password", ""), rec.get("ndus", "")
     if body_email and body_password:
-        return body_email, body_password, ""
+        # reuse the cached ndus for this account if the password matches
+        rec = ACCOUNTS.get(body_email)
+        ndus = rec.get("ndus", "") if rec and rec.get("password") == body_password else ""
+        return body_email, body_password, ndus
     raise HTTPException(400, "provide session_id (from /api/login) or email+password")
 
 
@@ -94,6 +144,7 @@ def _ensure_login(tbox: TBox, email: str, password: str, ndus: str) -> bool:
     if email and password:
         ok, msg = tbox.login_full(email, password)
         if ok:
+            _remember_account(email, password, _cookie(tbox.jar, "ndus"), tbox.host)
             return bool(_cookie(tbox.jar, "ndus"))
         raise HTTPException(401, f"login failed: {msg}")
     raise HTTPException(401, "no session and no credentials")
@@ -104,10 +155,15 @@ def _refresh_if_needed(tbox: TBox, email: str, password: str):
     ok, msg = tbox.login_full(email, password)
     if ok:
         ndus = _cookie(tbox.jar, "ndus")
+        changed = False
         for sid, rec in SESSIONS.items():
             if rec.get("email") == email and rec.get("password") == password:
                 rec["ndus"] = ndus
                 rec["host"] = tbox.host
+                changed = True
+        if changed:
+            _store_json(SESSIONS_FILE, SESSIONS)
+        _remember_account(email, password, ndus, tbox.host)
         return True
     raise HTTPException(401, f"re-login failed: {msg}")
 
@@ -129,8 +185,10 @@ def root():
             "POST /api/resolve": "{url, session_id? | email,password?} -> {files:[...dlink]}",
             "GET  /api/links": "?url=&session_id= -> {files:[{name,dlink}]}",
             "GET  /api/download": "?url=&fs_id=&session_id= -> file stream",
+            "GET  /api/sessions": "-> session/account store status (masked)",
         },
-        "note": "Pass session_id (from /api/login) or email+password on each call.",
+        "note": "Login once with /api/login — sessions persist to disk and survive restarts. "
+                "ndus auto-refreshes silently with the stored account.",
     }
 
 
@@ -143,6 +201,7 @@ def api_login(req: LoginReq):
     ndus = _cookie(tbox.jar, "ndus")
     sid = _new_sid({"email": req.email, "password": req.password,
                     "ndus": ndus, "host": tbox.host})
+    _remember_account(req.email, req.password, ndus, tbox.host)
     return {"ok": True, "session_id": sid, "host": tbox.host, "ndus": ndus}
 
 
@@ -174,7 +233,24 @@ def api_register_finish(req: RegFinishReq):
         ndus = _cookie(tbox.jar, "ndus")
     sid = _new_sid({"email": req.email, "password": req.password,
                     "ndus": ndus, "host": tbox.host})
+    _remember_account(req.email, req.password, ndus, tbox.host)
     return {"ok": True, "session_id": sid, "host": tbox.host, "ndus": ndus}
+
+
+@app.get("/api/sessions")
+def api_sessions():
+    """Session/account store status (masked). Handy to confirm persistence."""
+    return {
+        "ok": True,
+        "persistent": True,
+        "sessions_file": os.path.basename(SESSIONS_FILE),
+        "accounts_file": os.path.basename(ACCOUNTS_FILE),
+        "sessions": len(SESSIONS),
+        "accounts": [{"email": _mask(e), "host": r.get("host", ""),
+                      "has_ndus": bool(r.get("ndus")),
+                      "updated": r.get("updated")} for e, r in ACCOUNTS.items()],
+        "note": "sessions survive restarts; only a redeploy clears them",
+    }
 
 
 def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True):
