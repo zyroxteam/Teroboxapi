@@ -241,11 +241,12 @@ class TBox:
     @property
     def api_host(self):
         """Host for USER-data APIs (drive/transfer/filemetas/download).
-        TeraBox homes accounts in region clusters: region_domain_prefix
-        from the login response tells which subdomain owns your data."""
+        TeraBox homes accounts in region clusters: region_domain_prefix from
+        the login response tells which cluster owns your data. We route to
+        <prefix>.terabox.com (canonical, DNS-stable) — the backend accepts
+        the ndus session there regardless of which mirror issued the login."""
         if self.region_prefix:
-            base = self.host[4:] if self.host.startswith("www.") else self.host
-            return f"{self.region_prefix}.{base}"
+            return f"{self.region_prefix}.terabox.com"
         return self.host
 
     def _http(self, method, url, data=None, headers=None, referer=None, timeout=45):
@@ -522,13 +523,14 @@ class TBox:
 
     def set_ndus(self, ndus):
         import http.cookiejar as cj
-        c = cj.Cookie(version="0", name="ndus", value=ndus, port=None,
-                      port_specified=False, domain=self._cookie_base_domain(),
-                      domain_specified=True, domain_initial_dot=True,
-                      path="/", path_specified=True,
-                      secure=False, expires=int(time.time()) + 86400 * 30,
-                      discard=False, comment=None, comment_url=None, rest={}, rfc2109=False)
-        self.jar.set_cookie(c)
+        for dom in {self._cookie_base_domain(), ".terabox.com"} - {""}:
+            c = cj.Cookie(version="0", name="ndus", value=ndus, port=None,
+                          port_specified=False, domain=dom,
+                          domain_specified=True, domain_initial_dot=True,
+                          path="/", path_specified=True,
+                          secure=False, expires=int(time.time()) + 86400 * 30,
+                          discard=False, comment=None, comment_url=None, rest={}, rfc2109=False)
+            self.jar.set_cookie(c)
 
     def jar_dump(self):
         """Serialize the whole cookie jar (ndus alone is not enough for user APIs)."""
