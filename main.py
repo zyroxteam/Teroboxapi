@@ -331,7 +331,7 @@ def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
 
 @app.get("/api/debug/raw")
 def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
-                  email: str = "", password: str = ""):
+                  email: str = "", password: str = "", host: str = ""):
     """Fire an arbitrary GET at a whitelisted TeraBox API with session cookies.
     Placeholders in `extra`: {sign} {ts} {surl} {fid}"""
     rec = _get_creds(session_id, email, password)
@@ -343,6 +343,14 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
     tbox = TBox(url, host=rec.get("host") or None)
     try:
         _ensure_login(tbox, e, p, rec.get("ndus", ""), rec.get("cookies"))
+        if host:
+            import http.cookiejar as cj
+            ndus_v = rec.get("ndus", "")
+            tbox.host = host
+            tbox.final_url = f"https://{host}/sharing/link?surl=" + (tbox.final_url.split("surl=")[-1].split("&")[0] if "surl=" in tbox.final_url else "")
+            tbox.jar = __import__("http.cookiejar", fromlist=["CookieJar"]).CookieJar()
+            tbox.op = __import__("urllib.request", fromlist=["build_opener"]).build_opener(__import__("urllib.request", fromlist=["HTTPCookieProcessor"]).HTTPCookieProcessor(tbox.jar))
+            tbox.set_ndus(ndus_v)
         data = tbox.resolve_share()
     except core.TBoxError as ex:
         raise HTTPException(502, f"terabox: {ex}")
