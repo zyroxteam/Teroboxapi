@@ -376,6 +376,13 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
     full = f"https://{tbox.host}{path}?{tbox.Q}&{extra}"
     for k, v in (("{sign}", sign), ("{ts}", ts), ("{surl}", surl), ("{fid}", fid)):
         full = full.replace(k, v)
+    try:
+        from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
+        sp = urlsplit(full)
+        full = urlunsplit((sp.scheme, sp.netloc, sp.path,
+                           urlencode(parse_qsl(sp.query, keep_blank_values=True)), ""))
+    except Exception:
+        pass
     s, out, _ = tbox._http("GET", full, headers={"Referer": tbox.final_url})
     body = out.decode("utf-8", "ignore")
     return {"http": s, "requested": full[:300], "body": body[:20000]}
