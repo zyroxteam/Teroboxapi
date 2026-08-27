@@ -623,7 +623,8 @@ def api_links(url: str, session_id: str = "", email: str = "", password: str = "
 
 @app.get("/api/download")
 def api_download(url: str, fs_id: str = "", session_id: str = "",
-                 email: str = "", password: str = ""):
+                 email: str = "", password: str = "",
+                 request: Request = None, max_bytes: int = 0):
     rec = _get_creds(session_id, email, password)
     e, p = rec.get("email", ""), rec.get("password", "")
     tbox = TBox(url, host=rec.get("host") or None)
@@ -663,10 +664,14 @@ def api_download(url: str, fs_id: str = "", session_id: str = "",
     if not dlink:
         raise HTTPException(403, f"no download link ({via}: {json.dumps(dnotes, ensure_ascii=False)[:300]}) — re-login may help")
 
-    req = urllib.request.Request(dlink, headers={
+    cdn_headers = {
         "User-Agent": core.UA, "Referer": tbox.final_url,
         "Cookie": "; ".join(f"{c.name}={c.value}" for c in tbox.jar),
-    })
+    }
+    range_hdr = request.headers.get("range") if request is not None else None
+    if range_hdr:
+        cdn_headers["Range"] = range_hdr
+    req = urllib.request.Request(dlink, headers=cdn_headers)
     try:
         resp = tbox.op.open(req, timeout=120)
     except urllib.error.HTTPError as ex:
@@ -675,21 +680,40 @@ def api_download(url: str, fs_id: str = "", session_id: str = "",
         # DNS failures / network errors on the CDN host surface here
         raise HTTPException(502, f"download source unreachable: {ex}")
     total = resp.headers.get("Content-Length")
+    status = 200
+    if getattr(resp, "status", 200) == 206:
+        status = 206
+
+    sent = 0
 
     def gen():
+        nonlocal sent
         while True:
-            chunk = resp.read(256 * 1024)
+            if max_bytes and sent >= max_bytes:
+                break
+            n = 256 * 1024
+            if max_bytes:
+                n = min(n, max_bytes - sent)
+            chunk = resp.read(n)
             if not chunk:
                 break
+            sent += len(chunk)
             yield chunk
 
     headers = {
         "Content-Disposition": f'attachment; filename="{urllib.parse.quote(name)}"',
         "Accept-Ranges": "bytes",
+        "X-Accel-Buffering": "no",   # tell edge proxies not to buffer the stream
+        "Cache-Control": "no-store",
     }
-    if total:
+    if range_hdr and resp.headers.get("Content-Range"):
+        headers["Content-Range"] = resp.headers.get("Content-Range")
+    if total and not max_bytes:
         headers["Content-Length"] = total
-    return StreamingResponse(gen(), media_type="application/octet-stream", headers=headers)
+    elif max_bytes:
+        headers["Content-Length"] = str(min(int(total or max_bytes), max_bytes))
+    return StreamingResponse(gen(), status_code=status,
+                             media_type="application/octet-stream", headers=headers)
 
 
 if __name__ == "__main__":
