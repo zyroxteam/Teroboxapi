@@ -49,6 +49,9 @@ SESSION_FILE = os.path.expanduser("~/.terabox_session.json")
 APP_ID = "250528"
 PASS_VERSION = "2.8"
 
+class TBoxError(RuntimeError):
+    """Raised on fatal TeraBox errors (was sys.exit in the CLI days)."""
+
 # ----------------------------------------------------------------------------
 # tiny console helpers
 # ----------------------------------------------------------------------------
@@ -57,7 +60,7 @@ def info(*a):
 
 def die(msg, code=1):
     print("ERROR: " + msg, file=sys.stderr, flush=True)
-    sys.exit(code)
+    raise TBoxError(msg)
 
 def hr():
     print("-" * 60, flush=True)
@@ -501,10 +504,22 @@ class TBox:
         url = (f"https://{self.host}/file/get_new_download_url?app_id={APP_ID}"
                f"&channel=dubox&clienttype=0&fid={fid}&dsid={fid}&id={fid}"
                f"&osserr=0&sign={sign}&token={timestamp}")
-        s, out, _ = self._http("GET", url, headers={"Referer": self.final_url})
-        r = json.loads(out.decode())
+        self.last_dlink_error = ""
+        try:
+            s, out, _ = self._http("GET", url, headers={"Referer": self.final_url})
+        except Exception as e:
+            self.last_dlink_error = f"HTTP request failed: {e}"
+            return ""
+        try:
+            r = json.loads(out.decode("utf-8", "ignore"))
+        except Exception:
+            self.last_dlink_error = f"non-JSON response (HTTP {s}): {out[:200]!r}"
+            return ""
         d = r.get("data") or {}
-        return d.get("dlink") or ""
+        if not d.get("dlink"):
+            self.last_dlink_error = f"HTTP {s} errno={r.get('errno')} errcode={r.get('error_code')} msg={r.get('error_msg') or r.get('show_msg')}"
+            return ""
+        return d["dlink"]
 
 # ----------------------------------------------------------------------------
 # captcha solving (PIL + numpy)

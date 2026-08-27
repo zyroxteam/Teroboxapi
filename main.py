@@ -253,10 +253,46 @@ def api_sessions():
     }
 
 
-def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True):
+@app.get("/api/debug/dlink")
+def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
+                    email: str = "", password: str = ""):
+    """Raw get_new_download_url response — for diagnosing empty dlinks."""
+    e, p, n = _get_creds(session_id, email, password)
     tbox = TBox(url)
-    _ensure_login(tbox, email, password, ndus)
-    data = tbox.resolve_share()
+    try:
+        _ensure_login(tbox, e, p, n)
+        data = tbox.resolve_share()
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
+    lst = data.get("list") or []
+    target = None
+    for it in lst:
+        if fs_id and str(it.get("fs_id")) == str(fs_id):
+            target = it
+            break
+    if target is None:
+        if len(lst) == 1:
+            target = lst[0]
+        else:
+            raise HTTPException(400, "pass fs_id; files: " +
+                                ",".join(str(i.get("fs_id")) for i in lst))
+    fid = target.get("fs_id")
+    sign = data.get("sign", "")
+    ts = str(data.get("timestamp", ""))
+    dl = tbox.get_dlink(fid, sign, ts)
+    return {"ok": bool(dl), "fs_id": fid, "dlink": dl,
+            "last_dlink_error": getattr(tbox, "last_dlink_error", ""),
+            "host": tbox.host, "sign": sign[:16], "timestamp": ts,
+            "final_url": tbox.final_url}
+
+
+def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True):
+    try:
+        tbox = TBox(url)
+        _ensure_login(tbox, email, password, ndus)
+        data = tbox.resolve_share()
+    except core.TBoxError as e:
+        raise HTTPException(502, f"terabox: {e}")
     lst = data.get("list") or []
     if not lst:
         raise HTTPException(404, "no files in this share")
@@ -268,6 +304,7 @@ def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_lin
         fid = it.get("fs_id")
         size = it.get("size", 0)
         dlink = tbox.get_dlink(fid, sign, ts) if want_links else ""
+        dlink_error = getattr(tbox, "last_dlink_error", "")
         if not dlink and (email and password):
             # cached ndus may be stale -> re-login on this host and retry once
             _refresh_if_needed(tbox, email, password)
@@ -275,12 +312,14 @@ def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_lin
             sign = data.get("sign", "")
             ts = str(data.get("timestamp", ""))
             dlink = tbox.get_dlink(fid, sign, ts)
+            dlink_error = getattr(tbox, "last_dlink_error", "") or dlink_error
         files.append({
             "name": name,
             "size": size,
             "size_human": core.fmt_size(size),
             "fs_id": fid,
             "dlink": dlink,
+            **({"dlink_error": dlink_error} if (not dlink and dlink_error) else {}),
         })
     surl = tbox.final_url.split("surl=")[-1].split("&")[0] if "surl=" in tbox.final_url else ""
     return {"ok": True, "host": tbox.host, "final_url": tbox.final_url,
@@ -304,8 +343,11 @@ def api_download(url: str, fs_id: str = "", session_id: str = "",
                  email: str = "", password: str = ""):
     e, p, n = _get_creds(session_id, email, password)
     tbox = TBox(url)
-    _ensure_login(tbox, e, p, n)
-    data = tbox.resolve_share()
+    try:
+        _ensure_login(tbox, e, p, n)
+        data = tbox.resolve_share()
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
     lst = data.get("list") or []
     if not lst:
         raise HTTPException(404, "no files in this share")
