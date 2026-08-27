@@ -479,6 +479,51 @@ def api_debug_transfer(url: str, session_id: str = "", email: str = "",
             "randsk_head": randsk[:24], "results": out}
 
 
+@app.get("/api/debug/fetch")
+def api_debug_fetch(url: str, session_id: str = "", email: str = "",
+                    password: str = ""):
+    """Time each stage of the download chain from the server."""
+    import socket, time
+    rec = _get_creds(session_id, email, password)
+    e, p = rec.get("email", ""), rec.get("password", "")
+    t = {}
+    t0 = time.time()
+    tbox = TBox(url, host=rec.get("host") or None)
+    t["tbox_page"] = round(time.time() - t0, 2)
+    _ensure_login(tbox, e, p, rec.get("ndus", ""),
+                  rec.get("cookies"), rec.get("region_prefix", ""))
+    t["ensure_login"] = round(time.time() - t0 - sum(t.values()), 2)
+    t1 = time.time()
+    data = tbox.resolve_share()
+    t["shorturlinfo"] = round(time.time() - t1, 2)
+    lst = data.get("list") or []
+    fid = str(lst[0].get("fs_id")) if lst else ""
+    t1 = time.time()
+    dlink = tbox.get_share_dlink(data, fid)
+    t["share_download"] = round(time.time() - t1, 2)
+    if not dlink:
+        return {"dlink": None, "error": getattr(tbox, "last_dlink_error", ""), "timing": t}
+    t1 = time.time()
+    req = urllib.request.Request(dlink, headers={
+        "User-Agent": core.UA, "Referer": tbox.final_url,
+        "Cookie": "; ".join(f"{c.name}={c.value}" for c in tbox.jar),
+    })
+    try:
+        resp = tbox.op.open(req, timeout=60)
+        t["cdn_open"] = round(time.time() - t1, 2)
+        t1 = time.time()
+        chunk = resp.read(65536)
+        t["cdn_first_64k"] = round(time.time() - t1, 2)
+        t["status"] = resp.status
+        t["content_length"] = resp.headers.get("Content-Length")
+        t["final_url"] = resp.geturl()[:150]
+        resp.close()
+    except Exception as ex:
+        t["cdn_error"] = f"{type(ex).__name__}: {ex} (after {round(time.time()-t1,2)}s)"
+    return {"dlink_head": dlink[:100], "timing": t,
+            "total": round(time.time() - t0, 2)}
+
+
 @app.get("/api/debug/connect")
 def api_debug_connect(host: str, port: int = 443):
     """TCP connect test from the server."""
