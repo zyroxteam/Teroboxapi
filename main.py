@@ -311,6 +311,37 @@ def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
             "notes": notes, "host": tbox.host, "final_url": tbox.final_url}
 
 
+@app.get("/api/debug/raw")
+def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
+                  email: str = "", password: str = ""):
+    """Fire an arbitrary GET at a whitelisted TeraBox API with session cookies.
+    Placeholders in `extra`: {sign} {ts} {surl} {fid}"""
+    e, p, n = _get_creds(session_id, email, password)
+    allowed = {"/share/list", "/api/list", "/api/filemetas", "/api/download",
+               "/file/get_new_download_url", "/share/verify", "/api/shorturlinfo"}
+    if path not in allowed:
+        raise HTTPException(400, f"path not allowed; one of {sorted(allowed)}")
+    tbox = TBox(url)
+    try:
+        _ensure_login(tbox, e, p, n)
+        data = tbox.resolve_share()
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
+    sign = data.get("sign", "")
+    ts = str(data.get("timestamp", ""))
+    surl = tbox.final_url.split("surl=")[-1].split("&")[0] if "surl=" in tbox.final_url else ""
+    fid = ""
+    lst = data.get("list") or []
+    if lst:
+        fid = str(lst[0].get("fs_id", ""))
+    full = f"https://{tbox.host}{path}?{tbox.Q}&{extra}"
+    for k, v in (("{sign}", sign), ("{ts}", ts), ("{surl}", surl), ("{fid}", fid)):
+        full = full.replace(k, v)
+    s, out, _ = tbox._http("GET", full, headers={"Referer": tbox.final_url})
+    body = out.decode("utf-8", "ignore")
+    return {"http": s, "requested": full[:300], "body": body[:2000]}
+
+
 def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True):
     try:
         tbox = TBox(url)
