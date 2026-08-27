@@ -282,8 +282,15 @@ def api_sessions():
 
 
 def _dlink_with_fallback(tbox: TBox, data: dict, fid, name: str = ""):
-    """direct dlink -> save-to-drive -> filemetas. Returns (dlink, how, notes)."""
+    """share/download -> get_new_download_url -> save-to-drive -> filemetas."""
     notes = {}
+    try:
+        dl = tbox.get_share_dlink(data, fid)
+    except Exception as ex:
+        dl, notes["share_download"] = "", f"network: {ex}"
+    if dl:
+        return dl, "share_download", notes
+    notes["share_download"] = getattr(tbox, "last_dlink_error", "")
     try:
         dl = tbox.get_dlink(fid, data.get("sign", ""), str(data.get("timestamp", "")))
     except Exception as ex:

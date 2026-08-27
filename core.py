@@ -637,6 +637,37 @@ class TBox:
             return ""
         return d["dlink"]
 
+    def get_share_dlink(self, data, fid):
+        """THE working flow (mirrors the web app): GET /share/download with
+        shareid/uk/sign/timestamp from shorturlinfo, on the region host.
+        Returns the direct dlink for a shared file — no save needed."""
+        self.last_dlink_error = ""
+        params = {
+            "scene": "", "bdstoken": "",
+            "shareid": str(data.get("shareid", "")),
+            "type": "", "sign": str(data.get("sign", "")),
+            "timestamp": str(data.get("timestamp", "")),
+            "need_speed": "0", "product": "share",
+            "uk": str(data.get("uk", "")),
+            "primaryid": str(data.get("shareid", "")),
+            "fid_list": json.dumps([str(fid)]),
+        }
+        url = f"https://{self.api_host}/share/download?{self.Q}&" + urllib.parse.urlencode(params)
+        try:
+            s, out, _ = self._http("GET", url, headers={"Referer": self.final_url})
+        except Exception as ex:
+            self.last_dlink_error = f"network: {ex}"
+            return ""
+        try:
+            r = json.loads(out.decode("utf-8", "ignore"))
+        except Exception:
+            self.last_dlink_error = f"share/download non-JSON (HTTP {s})"
+            return ""
+        if r.get("errno") != 0:
+            self.last_dlink_error = f"share/download errno={r.get('errno')} {r.get('show_msg', '')}"
+            return ""
+        return r.get("dlink") or ""
+
     def save_share_file(self, data, fid):
         """Save a shared file into the account's own drive (folder '/').
         TeraBox only issues dlinks for files that exist in YOUR drive.
