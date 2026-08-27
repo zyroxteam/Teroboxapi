@@ -77,12 +77,14 @@ ACCOUNTS: dict = _load_json(ACCOUNTS_FILE, {})
 print(f"[store] restored {len(SESSIONS)} session(s), {len(ACCOUNTS)} account(s)", flush=True)
 
 
-def _remember_account(email: str, password: str, ndus: str, host: str, cookies: list = None):
+def _remember_account(email: str, password: str, ndus: str, host: str,
+                      cookies: list = None, region_prefix: str = ""):
     """Cache a successful login so the session cookies are reused without re-login."""
     if not email:
         return
     ACCOUNTS[email] = {"password": password, "ndus": ndus, "host": host,
-                       "cookies": cookies or [], "updated": int(time.time())}
+                       "cookies": cookies or [], "region_prefix": region_prefix,
+                       "updated": int(time.time())}
     _store_json(ACCOUNTS_FILE, ACCOUNTS)
 
 
@@ -137,12 +139,15 @@ def _get_creds(body_session: str, body_email: str, body_password: str) -> dict:
     raise HTTPException(400, "provide session_id (from /api/login) or email+password")
 
 
-def _ensure_login(tbox: TBox, email: str, password: str, ndus: str, cookies: list = None) -> bool:
+def _ensure_login(tbox: TBox, email: str, password: str, ndus: str,
+                  cookies: list = None, region_prefix: str = "") -> bool:
     """Make sure tbox has a usable session. Returns True if we have one."""
     if ndus:
         tbox.set_ndus(ndus)
         if cookies:
             tbox.jar_load(cookies)
+        if region_prefix:
+            tbox.region_prefix = region_prefix
         tbox.refresh_tokens()  # session-bound jsToken for user APIs
         return True
     if email and password:
@@ -160,16 +165,18 @@ def _refresh_if_needed(tbox: TBox, email: str, password: str):
     if ok:
         ndus = _cookie(tbox.jar, "ndus")
         cookies = tbox.jar_dump()
+        region = getattr(tbox, "region_prefix", None) or ""
         changed = False
         for sid, rec in SESSIONS.items():
             if rec.get("email") == email and rec.get("password") == password:
                 rec["ndus"] = ndus
                 rec["host"] = tbox.host
                 rec["cookies"] = cookies
+                rec["region_prefix"] = region
                 changed = True
         if changed:
             _store_json(SESSIONS_FILE, SESSIONS)
-        _remember_account(email, password, ndus, tbox.host, cookies)
+        _remember_account(email, password, ndus, tbox.host, cookies, region)
         return True
     raise HTTPException(401, f"re-login failed: {msg}")
 
@@ -209,9 +216,11 @@ def api_login(req: LoginReq):
         raise HTTPException(401, msg)
     ndus = _cookie(tbox.jar, "ndus")
     cookies = tbox.jar_dump()
+    region = getattr(tbox, "region_prefix", None) or ""
     sid = _new_sid({"email": req.email, "password": req.password,
-                    "ndus": ndus, "host": tbox.host, "cookies": cookies})
-    _remember_account(req.email, req.password, ndus, tbox.host, cookies)
+                    "ndus": ndus, "host": tbox.host, "cookies": cookies,
+                    "region_prefix": region})
+    _remember_account(req.email, req.password, ndus, tbox.host, cookies, region)
     return {"ok": True, "session_id": sid, "host": tbox.host, "ndus": ndus}
 
 
@@ -248,9 +257,11 @@ def api_register_finish(req: RegFinishReq):
             raise HTTPException(401, f"post-register login failed: {msg3}")
         ndus = _cookie(tbox.jar, "ndus")
     cookies = tbox.jar_dump()
+    region = getattr(tbox, "region_prefix", None) or ""
     sid = _new_sid({"email": req.email, "password": req.password,
-                    "ndus": ndus, "host": tbox.host, "cookies": cookies})
-    _remember_account(req.email, req.password, ndus, tbox.host, cookies)
+                    "ndus": ndus, "host": tbox.host, "cookies": cookies,
+                    "region_prefix": region})
+    _remember_account(req.email, req.password, ndus, tbox.host, cookies, region)
     return {"ok": True, "session_id": sid, "host": tbox.host, "ndus": ndus}
 
 
@@ -306,7 +317,8 @@ def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
     e, p = rec.get("email", ""), rec.get("password", "")
     tbox = TBox(url, host=rec.get("host") or None)
     try:
-        _ensure_login(tbox, e, p, rec.get("ndus", ""), rec.get("cookies"))
+        _ensure_login(tbox, e, p, rec.get("ndus", ""),
+                      rec.get("cookies"), rec.get("region_prefix", ""))
         data = tbox.resolve_share()
     except core.TBoxError as ex:
         raise HTTPException(502, f"terabox: {ex}")
@@ -390,15 +402,18 @@ def api_debug_cookies(url: str = "", session_id: str = "",
     rec = _get_creds(session_id, email, password)
     names = [c.get("name") for c in (rec.get("cookies") or [])]
     return {"ok": True, "cookie_names": names,
-            "count": len(names), "host": rec.get("host", "")}
+            "count": len(names), "host": rec.get("host", ""),
+            "region_prefix": rec.get("region_prefix", ""),
+            "api_host_note": f"user APIs go to {rec.get('region_prefix') or 'www'}." +
+                             (rec.get("host") or "").removeprefix("www.")}
 
 
 def _resolve_with_creds(url: str, rec: dict, want_links: bool = True):
     email, password = rec.get("email", ""), rec.get("password", "")
     try:
         tbox = TBox(url, host=rec.get("host") or None)
-        _ensure_login(tbox, email, password, rec.get("ndus", ""), rec.get("cookies"))
-        data = tbox.resolve_share()
+        _ensure_login(tbox, email, password, rec.get("ndus", ""),
+                      rec.get("cookies"), rec.get("region_prefix", ""))
     except core.TBoxError as e:
         raise HTTPException(502, f"terabox: {e}")
     lst = data.get("list") or []
@@ -461,7 +476,8 @@ def api_download(url: str, fs_id: str = "", session_id: str = "",
     e, p = rec.get("email", ""), rec.get("password", "")
     tbox = TBox(url, host=rec.get("host") or None)
     try:
-        _ensure_login(tbox, e, p, rec.get("ndus", ""), rec.get("cookies"))
+        _ensure_login(tbox, e, p, rec.get("ndus", ""),
+                      rec.get("cookies"), rec.get("region_prefix", ""))
         data = tbox.resolve_share()
     except core.TBoxError as ex:
         raise HTTPException(502, f"terabox: {ex}")

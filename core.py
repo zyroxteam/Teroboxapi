@@ -235,7 +235,18 @@ class TBox:
         self.pp1 = self.pp2 = None
         self.rsa_n = self.rsa_e = None
         self.force_host = host or None
+        self.region_prefix = None  # e.g. "dm" — set after login (region_domain_prefix)
         self._resolve_share(share_url)
+
+    @property
+    def api_host(self):
+        """Host for USER-data APIs (drive/transfer/filemetas/download).
+        TeraBox homes accounts in region clusters: region_domain_prefix
+        from the login response tells which subdomain owns your data."""
+        if self.region_prefix:
+            base = self.host[4:] if self.host.startswith("www.") else self.host
+            return f"{self.region_prefix}.{base}"
+        return self.host
 
     def _http(self, method, url, data=None, headers=None, referer=None, timeout=45):
         body = data.encode() if isinstance(data, str) else data
@@ -441,6 +452,7 @@ class TBox:
             if err == 0 or (err not in (460030, 460020) and "dragdrop" not in str(resp.get("errmsg", ""))):
                 ndus = _cookie(self.jar, "ndus")
                 if ndus:
+                    self.region_prefix = ((resp.get("data") or {}).get("region_domain_prefix") or None)
                     return True, "ok"
                 return False, f"login response without ndus: {resp}"
             if (resp.get("errmsg") == "dragdrop" or err in (460030, 460020)
@@ -585,7 +597,7 @@ class TBox:
         return r
 
     def get_dlink(self, fid, sign, timestamp):
-        url = (f"https://{self.host}/file/get_new_download_url?app_id={APP_ID}"
+        url = (f"https://{self.api_host}/file/get_new_download_url?app_id={APP_ID}"
                f"&channel=dubox&clienttype=0&fid={fid}&dsid={fid}&id={fid}"
                f"&osserr=0&sign={sign}&token={timestamp}")
         self.last_dlink_error = ""
@@ -618,7 +630,7 @@ class TBox:
             "sekey": data.get("randsk", ""),
         }
         s, out, _ = self._http(
-            "POST", f"https://{self.host}/share/transfer?{self.Q}",
+            "POST", f"https://{self.api_host}/share/transfer?{self.Q}",
             data=urllib.parse.urlencode(form).encode(),
             headers={"Content-Type": "application/x-www-form-urlencoded",
                      "Origin": f"https://{self.host}"},
@@ -632,7 +644,7 @@ class TBox:
     def find_in_drive(self, name):
         """fs_id of a file by name in the drive root (for errno-12 re-saves)."""
         s, out, _ = self._http(
-            "GET", f"https://{self.host}/api/list?dir=%2F&web=1&{self.Q}",
+            "GET", f"https://{self.api_host}/api/list?dir=%2F&web=1&{self.Q}",
             headers={"Referer": self.final_url})
         try:
             r = json.loads(out.decode("utf-8", "ignore"))
@@ -647,7 +659,7 @@ class TBox:
         """dlink for a file in the OWN drive via /api/filemetas."""
         self.last_dlink_error = ""
         s, out, _ = self._http(
-            "GET", f"https://{self.host}/api/filemetas?target={fid}&dlink=1&{self.Q}",
+            "GET", f"https://{self.api_host}/api/filemetas?target={fid}&dlink=1&{self.Q}",
             headers={"Referer": self.final_url})
         try:
             r = json.loads(out.decode("utf-8", "ignore"))
