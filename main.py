@@ -479,6 +479,21 @@ def api_debug_transfer(url: str, session_id: str = "", email: str = "",
             "randsk_head": randsk[:24], "results": out}
 
 
+@app.get("/api/debug/connect")
+def api_debug_connect(host: str, port: int = 443):
+    """TCP connect test from the server."""
+    import socket, time
+    t0 = time.time()
+    try:
+        s = socket.create_connection((host, port), timeout=8)
+        s.close()
+        return {"ok": True, "host": host, "port": port,
+                "ms": int((time.time() - t0) * 1000)}
+    except Exception as ex:
+        return {"ok": False, "host": host, "port": port,
+                "ms": int((time.time() - t0) * 1000), "error": str(ex)}
+
+
 @app.get("/api/debug/dns")
 def api_debug_dns(host: str):
     """Resolve a hostname from the server's perspective."""
