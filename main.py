@@ -586,6 +586,9 @@ def api_download(url: str, fs_id: str = "", session_id: str = "",
         resp = tbox.op.open(req, timeout=120)
     except urllib.error.HTTPError as ex:
         raise HTTPException(502, f"download source HTTP {ex.code}")
+    except Exception as ex:
+        # DNS failures / network errors on the CDN host surface here
+        raise HTTPException(502, f"download source unreachable: {ex}")
     total = resp.headers.get("Content-Length")
 
     def gen():
