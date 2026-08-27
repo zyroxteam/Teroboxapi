@@ -194,6 +194,14 @@ def _refresh_if_needed(tbox: TBox, email: str, password: str):
     raise HTTPException(401, f"re-login failed: {msg}")
 
 
+@app.get("/app", include_in_schema=False)
+def downloader_page():
+    """Browser-based chunked downloader — bypasses edge proxy streaming limits."""
+    from fastapi.responses import HTMLResponse
+    with open(os.path.join(DATA_DIR, "downloader.html"), "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "ts": int(time.time())}

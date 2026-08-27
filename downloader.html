@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TeraBox Downloader — zyrox</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: linear-gradient(135deg, #0f0c29, #302b63, #24243e);
+    min-height: 100vh; color: #e8e8f0; padding: 24px 16px;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 26px; text-align: center; margin-bottom: 6px;
+       background: linear-gradient(90deg, #ff6b6b, #ffa500);
+       -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .sub { text-align: center; color: #9a9ab5; font-size: 13px; margin-bottom: 24px; }
+  .card {
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 14px; padding: 20px; margin-bottom: 16px;
+    backdrop-filter: blur(8px);
+  }
+  label { font-size: 12px; color: #9a9ab5; display: block; margin-bottom: 6px; }
+  input {
+    width: 100%; padding: 12px 14px; border-radius: 10px; font-size: 14px;
+    border: 1px solid rgba(255,255,255,0.15); background: rgba(0,0,0,0.3);
+    color: #fff; outline: none;
+  }
+  input:focus { border-color: #ffa500; }
+  button {
+    width: 100%; padding: 13px; border: none; border-radius: 10px;
+    font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 12px;
+    background: linear-gradient(90deg, #ff6b6b, #ffa500); color: #fff;
+    transition: opacity .2s;
+  }
+  button:disabled { opacity: .5; cursor: wait; }
+  button.sec { background: rgba(255,255,255,0.1); font-weight: 500; }
+  .file {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px; border-radius: 10px; background: rgba(0,0,0,0.25);
+    margin-top: 10px; gap: 10px; flex-wrap: wrap;
+  }
+  .finfo { flex: 1; min-width: 180px; }
+  .fname { font-weight: 600; word-break: break-all; }
+  .fsize { font-size: 12px; color: #9a9ab5; margin-top: 3px; }
+  .dlbtn {
+    padding: 9px 18px; border-radius: 8px; border: none; cursor: pointer;
+    background: #2e7d32; color: #fff; font-weight: 600; font-size: 13px;
+  }
+  .dlbtn:disabled { opacity: .6; }
+  .prog { width: 100%; margin-top: 10px; display: none; }
+  .pbar { height: 8px; background: rgba(255,255,255,0.1); border-radius: 99px; overflow: hidden; }
+  .pfill { height: 100%; width: 0%; background: linear-gradient(90deg, #2e7d32, #66bb6a); transition: width .3s; }
+  .ptext { font-size: 12px; color: #9a9ab5; margin-top: 5px; }
+  .msg { font-size: 13px; margin-top: 10px; padding: 10px 12px; border-radius: 8px; display: none; }
+  .err { background: rgba(255,0,0,0.12); color: #ff8a80; }
+  .okm { background: rgba(76,175,80,0.12); color: #a5d6a7; }
+  .hint { font-size: 11.5px; color: #77779a; margin-top: 12px; line-height: 1.6; }
+  code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 4px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>📥 TeraBox Downloader</h1>
+  <div class="sub">zyrox-shield API · chunked browser download · koi bhi file size</div>
+
+  <div class="card">
+    <label>TeraBox share link (terabox / 1024tera / terasharelink / mirrobox...)</label>
+    <input id="shareUrl" placeholder="https://terasharelink.com/s/xxxxx" spellcheck="false">
+    <button id="goBtn" onclick="resolve()">🔍 Files dhoondo</button>
+    <div id="msg" class="msg"></div>
+  </div>
+
+  <div class="card" id="filesCard" style="display:none">
+    <label>Files</label>
+    <div id="files"></div>
+    <div class="hint">
+      💡 <b>Download button</b> — file chunks me aapke browser pe download hoti hai (koi bhi size).<br>
+      💡 IDM/wget ke liye range-URL:
+      <code id="rangeHint" style="word-break:break-all"></code>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="hint">
+      Session server pe saved hai — login dobara nahi karna.
+      Agar <i>session expired</i> aaye toh <code>POST /api/login</code> ek baar chalao.
+    </div>
+  </div>
+</div>
+
+<script>
+const CHUNK = 8 * 1024 * 1024; // 8MB chunks — edge-proxy safe
+let currentUrl = "";
+let sid = localStorage.getItem("tb_sid") || "";
+
+function show(id, text, cls) {
+  const el = document.getElementById(id);
+  el.style.display = "block"; el.className = "msg " + cls; el.innerHTML = text;
+}
+function hide(id) { document.getElementById(id).style.display = "none"; }
+
+async function resolve() {
+  const url = document.getElementById("shareUrl").value.trim();
+  if (!url) return show("msg", "Pehle share link daalo", "err");
+  currentUrl = url;
+  const btn = document.getElementById("goBtn");
+  btn.disabled = true; btn.textContent = "⏳ Resolve ho raha hai...";
+  hide("msg"); hide("filesCard");
+  try {
+    const body = { url, session_id: sid };
+    const r = await fetch("/api/resolve", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      if ((d.detail || "").includes("session_id")) {
+        show("msg", "Session khatam — <code>POST /api/login</code> se naya session_id lo, phir is page pe daalo (console me: localStorage.setItem('tb_sid', '...'))", "err");
+      } else throw new Error(d.detail || r.status);
+      return;
+    }
+    sid = sid || (await fetch("/api/sessions").then(x => x.json()), sid);
+    render(d);
+  } catch (e) {
+    show("msg", "❌ " + e.message, "err");
+  } finally {
+    btn.disabled = false; btn.textContent = "🔍 Files dhoondo";
+  }
+}
+
+function human(n) {
+  n = parseInt(n || 0);
+  const u = ["B", "KB", "MB", "GB"];
+  let i = 0; while (n >= 1024 && i < 3) { n /= 1024; i++; }
+  return n.toFixed(i ? 1 : 0) + " " + u[i];
+}
+
+function render(d) {
+  const box = document.getElementById("files");
+  box.innerHTML = "";
+  (d.files || []).forEach((f, idx) => {
+    const row = document.createElement("div");
+    row.className = "file";
+    row.innerHTML = `
+      <div class="finfo">
+        <div class="fname">📄 ${f.name}</div>
+        <div class="fsize">${f.size_human || human(f.size)} · fs_id ${f.fs_id}</div>
+        <div class="prog" id="prog${idx}">
+          <div class="pbar"><div class="pfill" id="fill${idx}"></div></div>
+          <div class="ptext" id="ptext${idx}"></div>
+        </div>
+      </div>
+      <button class="dlbtn" id="dl${idx}" onclick="download(${idx})">⬇️ Download</button>`;
+    box.appendChild(row);
+  });
+  document.getElementById("rangeHint").textContent =
+    `${location.origin}/api/download?url=${encodeURIComponent(currentUrl)}&session_id=${sid}`;
+  document.getElementById("filesCard").style.display = "block";
+}
+
+async function download(idx) {
+  const btn = document.getElementById("dl" + idx);
+  const prog = document.getElementById("prog" + idx);
+  const fill = document.getElementById("fill" + idx);
+  const ptext = document.getElementById("ptext" + idx);
+  btn.disabled = true; prog.style.display = "block";
+  try {
+    const r = await fetch("/api/resolve", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: currentUrl, session_id: sid }),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || r.status);
+    const f = d.files[idx];
+    const size = parseInt(f.size || 0);
+    const chunks = [];
+    let start = 0, done = 0;
+    while (start < size) {
+      const end = Math.min(start + CHUNK, size) - 1;
+      const rr = await fetch(
+        `/api/download?url=${encodeURIComponent(currentUrl)}&session_id=${sid}&fs_id=${f.fs_id}`,
+        { headers: { Range: `bytes=${start}-${end}` } }
+      );
+      if (!rr.ok && rr.status !== 206) throw new Error("chunk " + start + " failed: HTTP " + rr.status);
+      const buf = await rr.arrayBuffer();
+      chunks.push(buf);
+      done += buf.byteLength; start = end + 1;
+      fill.style.width = Math.min(100, (done / size) * 100).toFixed(1) + "%";
+      ptext.textContent = `${human(done)} / ${human(size)} (${Math.round(done / size * 100)}%)`;
+    }
+    ptext.textContent = "💾 File ban rahi hai...";
+    const blob = new Blob(chunks, { type: "application/octet-stream" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+    ptext.textContent = "✅ Complete!";
+  } catch (e) {
+    ptext.textContent = "❌ " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+document.getElementById("shareUrl").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") resolve();
+});
+if (sid) document.getElementById("shareUrl").focus();
+</script>
+</body>
+</html>
