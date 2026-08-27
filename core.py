@@ -514,11 +514,18 @@ class TBox:
     def get_session_cookie_names(self):
         return {c.name: c.value for c in self.jar}
 
+    def _cookie_base_domain(self):
+        h = self.host or ""
+        if h.startswith("www."):
+            h = h[4:]
+        return "." + h if h else ""
+
     def set_ndus(self, ndus):
         import http.cookiejar as cj
         c = cj.Cookie(version="0", name="ndus", value=ndus, port=None,
-                      port_specified=False, domain=self.host, domain_specified=True,
-                      domain_initial_dot=False, path="/", path_specified=True,
+                      port_specified=False, domain=self._cookie_base_domain(),
+                      domain_specified=True, domain_initial_dot=True,
+                      path="/", path_specified=True,
                       secure=False, expires=int(time.time()) + 86400 * 30,
                       discard=False, comment=None, comment_url=None, rest={}, rfc2109=False)
         self.jar.set_cookie(c)
@@ -534,13 +541,14 @@ class TBox:
     def jar_load(self, cookies):
         """Restore a serialized cookie jar."""
         import http.cookiejar as cj
+        base = self._cookie_base_domain()
         for c in cookies or []:
             try:
-                dom = c.get("domain") or self.host or ""
+                dom = base or (c.get("domain") or self.host or "")
                 jar_c = cj.Cookie(version=0, name=c["name"], value=c["value"],
                                   port=None, port_specified=False, domain=dom,
                                   domain_specified=True,
-                                  domain_initial_dot=dom.startswith("."),
+                                  domain_initial_dot=True,
                                   path=c.get("path") or "/", path_specified=True,
                                   secure=False,
                                   expires=c.get("expires") or int(time.time()) + 86400 * 30,
