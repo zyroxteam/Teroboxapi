@@ -509,6 +509,33 @@ class TBox:
                       discard=False, comment=None, comment_url=None, rest={}, rfc2109=False)
         self.jar.set_cookie(c)
 
+    def jar_dump(self):
+        """Serialize the whole cookie jar (ndus alone is not enough for user APIs)."""
+        out = []
+        for c in self.jar:
+            out.append({"name": c.name, "value": c.value, "domain": c.domain,
+                        "path": c.path or "/", "expires": c.expires})
+        return out
+
+    def jar_load(self, cookies):
+        """Restore a serialized cookie jar."""
+        import http.cookiejar as cj
+        for c in cookies or []:
+            try:
+                dom = c.get("domain") or self.host or ""
+                jar_c = cj.Cookie(version=0, name=c["name"], value=c["value"],
+                                  port=None, port_specified=False, domain=dom,
+                                  domain_specified=True,
+                                  domain_initial_dot=dom.startswith("."),
+                                  path=c.get("path") or "/", path_specified=True,
+                                  secure=False,
+                                  expires=c.get("expires") or int(time.time()) + 86400 * 30,
+                                  discard=False, comment=None, comment_url=None,
+                                  rest={}, rfc2109=False)
+                self.jar.set_cookie(jar_c)
+            except Exception as e:
+                print(f"[jar_load] skip {c.get('name')}: {e}", flush=True)
+
     def resolve_share(self):
         """Steps 1-3: shorturlinfo -> file list + sign."""
         surl = self.final_url.split("surl=")[-1].split("&")[0] if "surl=" in self.final_url else ""

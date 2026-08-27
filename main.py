@@ -77,12 +77,12 @@ ACCOUNTS: dict = _load_json(ACCOUNTS_FILE, {})
 print(f"[store] restored {len(SESSIONS)} session(s), {len(ACCOUNTS)} account(s)", flush=True)
 
 
-def _remember_account(email: str, password: str, ndus: str, host: str):
-    """Cache a successful login so the ndus cookie is reused without re-login."""
+def _remember_account(email: str, password: str, ndus: str, host: str, cookies: list = None):
+    """Cache a successful login so the session cookies are reused without re-login."""
     if not email:
         return
     ACCOUNTS[email] = {"password": password, "ndus": ndus, "host": host,
-                       "updated": int(time.time())}
+                       "cookies": cookies or [], "updated": int(time.time())}
     _store_json(ACCOUNTS_FILE, ACCOUNTS)
 
 
@@ -121,26 +121,28 @@ def _new_sid(rec: dict) -> str:
     return sid
 
 
-def _get_creds(body_session: str, body_email: str, body_password: str):
-    """Return (email, password, ndus, host) from a session id or inline creds."""
+def _get_creds(body_session: str, body_email: str, body_password: str) -> dict:
+    """Return a creds record: {email, password, ndus, host, cookies}."""
     if body_session:
         rec = SESSIONS.get(body_session)
         if not rec:
             raise HTTPException(401, "unknown or expired session_id — call /api/login first")
-        return rec.get("email", ""), rec.get("password", ""), rec.get("ndus", ""), rec.get("host", "")
+        return rec
     if body_email and body_password:
-        # reuse the cached ndus for this account if the password matches
         rec = ACCOUNTS.get(body_email)
         if rec and rec.get("password") == body_password:
-            return body_email, body_password, rec.get("ndus", ""), rec.get("host", "")
-        return body_email, body_password, "", ""
+            return rec
+        return {"email": body_email, "password": body_password, "ndus": "",
+                "host": "", "cookies": None}
     raise HTTPException(400, "provide session_id (from /api/login) or email+password")
 
 
-def _ensure_login(tbox: TBox, email: str, password: str, ndus: str) -> bool:
-    """Make sure tbox has a usable ndus. Returns True if we have one."""
+def _ensure_login(tbox: TBox, email: str, password: str, ndus: str, cookies: list = None) -> bool:
+    """Make sure tbox has a usable session. Returns True if we have one."""
     if ndus:
         tbox.set_ndus(ndus)
+        if cookies:
+            tbox.jar_load(cookies)
         return True
     if email and password:
         ok, msg = tbox.login_full(email, password)
@@ -152,19 +154,21 @@ def _ensure_login(tbox: TBox, email: str, password: str, ndus: str) -> bool:
 
 
 def _refresh_if_needed(tbox: TBox, email: str, password: str):
-    """Re-login on the target host if the cached ndus stopped working."""
+    """Re-login on the target host if the cached cookies stopped working."""
     ok, msg = tbox.login_full(email, password)
     if ok:
         ndus = _cookie(tbox.jar, "ndus")
+        cookies = tbox.jar_dump()
         changed = False
         for sid, rec in SESSIONS.items():
             if rec.get("email") == email and rec.get("password") == password:
                 rec["ndus"] = ndus
                 rec["host"] = tbox.host
+                rec["cookies"] = cookies
                 changed = True
         if changed:
             _store_json(SESSIONS_FILE, SESSIONS)
-        _remember_account(email, password, ndus, tbox.host)
+        _remember_account(email, password, ndus, tbox.host, cookies)
         return True
     raise HTTPException(401, f"re-login failed: {msg}")
 
@@ -200,9 +204,10 @@ def api_login(req: LoginReq):
     if not ok:
         raise HTTPException(401, msg)
     ndus = _cookie(tbox.jar, "ndus")
+    cookies = tbox.jar_dump()
     sid = _new_sid({"email": req.email, "password": req.password,
-                    "ndus": ndus, "host": tbox.host})
-    _remember_account(req.email, req.password, ndus, tbox.host)
+                    "ndus": ndus, "host": tbox.host, "cookies": cookies})
+    _remember_account(req.email, req.password, ndus, tbox.host, cookies)
     return {"ok": True, "session_id": sid, "host": tbox.host, "ndus": ndus}
 
 
@@ -232,9 +237,10 @@ def api_register_finish(req: RegFinishReq):
         if not ok3:
             raise HTTPException(401, f"post-register login failed: {msg3}")
         ndus = _cookie(tbox.jar, "ndus")
+    cookies = tbox.jar_dump()
     sid = _new_sid({"email": req.email, "password": req.password,
-                    "ndus": ndus, "host": tbox.host})
-    _remember_account(req.email, req.password, ndus, tbox.host)
+                    "ndus": ndus, "host": tbox.host, "cookies": cookies})
+    _remember_account(req.email, req.password, ndus, tbox.host, cookies)
     return {"ok": True, "session_id": sid, "host": tbox.host, "ndus": ndus}
 
 
@@ -286,10 +292,11 @@ def _dlink_with_fallback(tbox: TBox, data: dict, fid, name: str = ""):
 def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
                     email: str = "", password: str = ""):
     """Diagnose the whole dlink chain: direct -> transfer -> filemetas."""
-    e, p, n, h = _get_creds(session_id, email, password)
-    tbox = TBox(url, host=h or None)
+    rec = _get_creds(session_id, email, password)
+    e, p = rec.get("email", ""), rec.get("password", "")
+    tbox = TBox(url, host=rec.get("host") or None)
     try:
-        _ensure_login(tbox, e, p, n)
+        _ensure_login(tbox, e, p, rec.get("ndus", ""), rec.get("cookies"))
         data = tbox.resolve_share()
     except core.TBoxError as ex:
         raise HTTPException(502, f"terabox: {ex}")
@@ -317,14 +324,15 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
                   email: str = "", password: str = ""):
     """Fire an arbitrary GET at a whitelisted TeraBox API with session cookies.
     Placeholders in `extra`: {sign} {ts} {surl} {fid}"""
-    e, p, n, h = _get_creds(session_id, email, password)
+    rec = _get_creds(session_id, email, password)
+    e, p = rec.get("email", ""), rec.get("password", "")
     allowed = {"/share/list", "/api/list", "/api/filemetas", "/api/download",
                "/file/get_new_download_url", "/share/verify", "/api/shorturlinfo"}
     if path not in allowed:
         raise HTTPException(400, f"path not allowed; one of {sorted(allowed)}")
-    tbox = TBox(url, host=h or None)
+    tbox = TBox(url, host=rec.get("host") or None)
     try:
-        _ensure_login(tbox, e, p, n)
+        _ensure_login(tbox, e, p, rec.get("ndus", ""), rec.get("cookies"))
         data = tbox.resolve_share()
     except core.TBoxError as ex:
         raise HTTPException(502, f"terabox: {ex}")
@@ -343,10 +351,21 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
     return {"http": s, "requested": full[:300], "body": body[:2000]}
 
 
-def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True, host: str = ""):
+@app.get("/api/debug/cookies")
+def api_debug_cookies(url: str = "", session_id: str = "",
+                      email: str = "", password: str = ""):
+    """Cookie names held by the current session (values not returned)."""
+    rec = _get_creds(session_id, email, password)
+    names = [c.get("name") for c in (rec.get("cookies") or [])]
+    return {"ok": True, "cookie_names": names,
+            "count": len(names), "host": rec.get("host", "")}
+
+
+def _resolve_with_creds(url: str, rec: dict, want_links: bool = True):
+    email, password = rec.get("email", ""), rec.get("password", "")
     try:
-        tbox = TBox(url, host=host or None)
-        _ensure_login(tbox, email, password, ndus)
+        tbox = TBox(url, host=rec.get("host") or None)
+        _ensure_login(tbox, email, password, rec.get("ndus", ""), rec.get("cookies"))
         data = tbox.resolve_share()
     except core.TBoxError as e:
         raise HTTPException(502, f"terabox: {e}")
@@ -367,6 +386,7 @@ def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_lin
             # cached ndus may be stale -> re-login on this host and retry once
             try:
                 _refresh_if_needed(tbox, email, password)
+                rec["ndus"], rec["cookies"] = _cookie(tbox.jar, "ndus"), tbox.jar_dump()
                 data = tbox.resolve_share()
                 sign = data.get("sign", "")
                 ts = str(data.get("timestamp", ""))
@@ -392,23 +412,24 @@ def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_lin
 
 @app.post("/api/resolve")
 def api_resolve(req: ResolveReq):
-    email, password, ndus, host = _get_creds(req.session_id, req.email, req.password)
-    return _resolve_with_creds(req.url, email, password, ndus, host=host)
+    rec = _get_creds(req.session_id, req.email, req.password)
+    return _resolve_with_creds(req.url, rec)
 
 
 @app.get("/api/links")
 def api_links(url: str, session_id: str = "", email: str = "", password: str = ""):
-    e, p, n, h = _get_creds(session_id, email, password)
-    return _resolve_with_creds(url, e, p, n, host=h)
+    rec = _get_creds(session_id, email, password)
+    return _resolve_with_creds(url, rec)
 
 
 @app.get("/api/download")
 def api_download(url: str, fs_id: str = "", session_id: str = "",
                  email: str = "", password: str = ""):
-    e, p, n, h = _get_creds(session_id, email, password)
-    tbox = TBox(url, host=h or None)
+    rec = _get_creds(session_id, email, password)
+    e, p = rec.get("email", ""), rec.get("password", "")
+    tbox = TBox(url, host=rec.get("host") or None)
     try:
-        _ensure_login(tbox, e, p, n)
+        _ensure_login(tbox, e, p, rec.get("ndus", ""), rec.get("cookies"))
         data = tbox.resolve_share()
     except core.TBoxError as ex:
         raise HTTPException(502, f"terabox: {ex}")
