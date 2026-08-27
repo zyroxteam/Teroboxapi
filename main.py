@@ -199,8 +199,11 @@ def root():
 
 @app.post("/api/login")
 def api_login(req: LoginReq):
-    tbox = TBox(CANON_URL)
-    ok, msg = tbox.login_full(req.email, req.password)
+    try:
+        tbox = TBox(CANON_URL)
+        ok, msg = tbox.login_full(req.email, req.password)
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
     if not ok:
         raise HTTPException(401, msg)
     ndus = _cookie(tbox.jar, "ndus")
@@ -213,8 +216,11 @@ def api_login(req: LoginReq):
 
 @app.post("/api/register/send")
 def api_register_send(req: RegSendReq):
-    tbox = TBox(CANON_URL)
-    ok, tok = tbox.register_sendcode(req.email)
+    try:
+        tbox = TBox(CANON_URL)
+        ok, tok = tbox.register_sendcode(req.email)
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
     if not ok:
         raise HTTPException(400, f"sendcode failed: {tok}")
     return {"ok": True, "token": tok,
@@ -223,8 +229,11 @@ def api_register_send(req: RegSendReq):
 
 @app.post("/api/register/finish")
 def api_register_finish(req: RegFinishReq):
-    tbox = TBox(CANON_URL)
-    ok, msg, raw = tbox.register_verify(req.email, req.token, req.code)
+    try:
+        tbox = TBox(CANON_URL)
+        ok, msg, raw = tbox.register_verify(req.email, req.token, req.code)
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
     if not ok:
         raise HTTPException(400, f"verify failed: {msg}")
     tok2 = (raw.get("data") or {}).get("token") or req.token
