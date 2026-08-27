@@ -395,6 +395,56 @@ def api_debug_login(req: LoginReq):
             "login_resp": last}
 
 
+@app.get("/api/debug/transfer")
+def api_debug_transfer(url: str, session_id: str = "", email: str = "",
+                       password: str = ""):
+    """Try share/transfer param variants, return every raw result."""
+    rec = _get_creds(session_id, email, password)
+    e, p = rec.get("email", ""), rec.get("password", "")
+    tbox = TBox(url, host=rec.get("host") or None)
+    try:
+        _ensure_login(tbox, e, p, rec.get("ndus", ""),
+                      rec.get("cookies"), rec.get("region_prefix", ""))
+        data = tbox.resolve_share()
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
+    lst = data.get("list") or []
+    if not lst:
+        raise HTTPException(404, "no files")
+    fid = str(lst[0].get("fs_id", ""))
+    shareid = str(data.get("shareid", ""))
+    uk = str(data.get("uk", ""))
+    randsk = data.get("randsk", "")
+    import urllib.parse as up
+    variants = {
+        "int_list_to_path": {"shareid": shareid, "from": uk, "to": "/",
+                             "fidlist": json.dumps([int(fid)]), "path": "/",
+                             "sekey": randsk},
+        "str_list_to": {"shareid": shareid, "from": uk, "to": "/",
+                        "fidlist": json.dumps([fid]), "sekey": randsk},
+        "path_only": {"shareid": shareid, "from": uk, "path": "/",
+                      "fidlist": json.dumps([fid]), "sekey": randsk},
+        "to_apps": {"shareid": shareid, "from": uk, "to": "/apps",
+                    "fidlist": json.dumps([fid]), "sekey": randsk},
+        "no_sekey": {"shareid": shareid, "from": uk, "to": "/",
+                     "fidlist": json.dumps([fid])},
+    }
+    out = {}
+    for name, form in variants.items():
+        try:
+            s, raw, _ = tbox._http(
+                "POST", f"https://{tbox.api_host}/share/transfer?{tbox.Q}",
+                data=up.urlencode(form).encode(),
+                headers={"Content-Type": "application/x-www-form-urlencoded",
+                         "Origin": f"https://{tbox.host}"},
+                referer=tbox.final_url)
+            out[name] = {"http": s, "body": raw.decode("utf-8", "ignore")[:300]}
+        except Exception as ex:
+            out[name] = {"error": str(ex)}
+    return {"fid": fid, "shareid": shareid, "uk": uk,
+            "randsk_head": randsk[:24], "results": out}
+
+
 @app.get("/api/debug/cookies")
 def api_debug_cookies(url: str = "", session_id: str = "",
                       email: str = "", password: str = ""):
