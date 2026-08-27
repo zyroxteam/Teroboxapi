@@ -43,6 +43,19 @@ app.add_middleware(
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"],
 )
 
+
+from fastapi import Request
+from fastapi.responses import JSONResponse as _JR
+import traceback as _tb
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exc(request: Request, exc: Exception):
+    return _JR(status_code=500, content={
+        "error": f"{type(exc).__name__}: {exc}",
+        "where": traceback.format_exc().splitlines()[-8:],
+    })
+
 # ---- persistent session / account store ----------------------------------
 # session_id -> {email, password, ndus, host}
 # email      -> {password, ndus, host, updated}   (account cache)
