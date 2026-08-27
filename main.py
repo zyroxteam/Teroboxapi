@@ -253,10 +253,38 @@ def api_sessions():
     }
 
 
+def _dlink_with_fallback(tbox: TBox, data: dict, fid, name: str = ""):
+    """direct dlink -> save-to-drive -> filemetas. Returns (dlink, how, notes)."""
+    notes = {}
+    dl = tbox.get_dlink(fid, data.get("sign", ""), str(data.get("timestamp", "")))
+    if dl:
+        return dl, "direct", notes
+    notes["direct"] = getattr(tbox, "last_dlink_error", "")
+    tr = tbox.save_share_file(data, fid)
+    notes["transfer_errno"] = tr.get("errno")
+    new_fid = None
+    if tr.get("errno") == 0:
+        lst = ((tr.get("data") or {}).get("extra") or {}).get("list") or []
+        if lst:
+            new_fid = lst[0].get("to_fs_id") or lst[0].get("fs_id")
+    elif tr.get("errno") == 12 and name:
+        # already in drive from an earlier save — find it
+        new_fid = tbox.find_in_drive(name)
+        notes["found_in_drive"] = bool(new_fid)
+    if new_fid:
+        dl = tbox.get_dlink_filemetas(new_fid)
+        if dl:
+            return dl, "filemetas", notes
+        notes["filemetas"] = getattr(tbox, "last_dlink_error", "")
+    else:
+        notes["transfer"] = tr
+    return "", "failed", notes
+
+
 @app.get("/api/debug/dlink")
 def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
                     email: str = "", password: str = ""):
-    """Raw get_new_download_url response — for diagnosing empty dlinks."""
+    """Diagnose the whole dlink chain: direct -> transfer -> filemetas."""
     e, p, n = _get_creds(session_id, email, password)
     tbox = TBox(url)
     try:
@@ -277,13 +305,10 @@ def api_debug_dlink(url: str, fs_id: str = "", session_id: str = "",
             raise HTTPException(400, "pass fs_id; files: " +
                                 ",".join(str(i.get("fs_id")) for i in lst))
     fid = target.get("fs_id")
-    sign = data.get("sign", "")
-    ts = str(data.get("timestamp", ""))
-    dl = tbox.get_dlink(fid, sign, ts)
-    return {"ok": bool(dl), "fs_id": fid, "dlink": dl,
-            "last_dlink_error": getattr(tbox, "last_dlink_error", ""),
-            "host": tbox.host, "sign": sign[:16], "timestamp": ts,
-            "final_url": tbox.final_url}
+    name = target.get("server_filename") or "file"
+    dl, how, notes = _dlink_with_fallback(tbox, data, fid, name)
+    return {"ok": bool(dl), "via": how, "fs_id": fid, "dlink": dl,
+            "notes": notes, "host": tbox.host, "final_url": tbox.final_url}
 
 
 def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_links: bool = True):
@@ -304,22 +329,29 @@ def _resolve_with_creds(url: str, email: str, password: str, ndus: str, want_lin
         fid = it.get("fs_id")
         size = it.get("size", 0)
         dlink = tbox.get_dlink(fid, sign, ts) if want_links else ""
-        dlink_error = getattr(tbox, "last_dlink_error", "")
-        if not dlink and (email and password):
+        via = "direct" if dlink else ""
+        dnotes = {}
+        if want_links and not dlink and (email and password):
             # cached ndus may be stale -> re-login on this host and retry once
-            _refresh_if_needed(tbox, email, password)
-            data = tbox.resolve_share()
-            sign = data.get("sign", "")
-            ts = str(data.get("timestamp", ""))
-            dlink = tbox.get_dlink(fid, sign, ts)
-            dlink_error = getattr(tbox, "last_dlink_error", "") or dlink_error
+            try:
+                _refresh_if_needed(tbox, email, password)
+                data = tbox.resolve_share()
+                sign = data.get("sign", "")
+                ts = str(data.get("timestamp", ""))
+                dlink = tbox.get_dlink(fid, sign, ts)
+                via = "direct" if dlink else ""
+            except core.TBoxError:
+                pass
+        if want_links and not dlink:
+            dlink, via, dnotes = _dlink_with_fallback(tbox, data, fid, name)
         files.append({
             "name": name,
             "size": size,
             "size_human": core.fmt_size(size),
             "fs_id": fid,
             "dlink": dlink,
-            **({"dlink_error": dlink_error} if (not dlink and dlink_error) else {}),
+            **({"via": via} if dlink else {}),
+            **({"notes": dnotes} if (not dlink and dnotes) else {}),
         })
     surl = tbox.final_url.split("surl=")[-1].split("&")[0] if "surl=" in tbox.final_url else ""
     return {"ok": True, "host": tbox.host, "final_url": tbox.final_url,
@@ -367,15 +399,16 @@ def api_download(url: str, fs_id: str = "", session_id: str = "",
     ts = str(data.get("timestamp", ""))
     fid = target.get("fs_id")
     name = target.get("server_filename") or target.get("filename") or "file"
-    dlink = tbox.get_dlink(fid, sign, ts)
+    dlink, via, dnotes = _dlink_with_fallback(tbox, data, fid, name)
     if not dlink and (e and p):
-        _refresh_if_needed(tbox, e, p)
-        data = tbox.resolve_share()
-        sign = data.get("sign", "")
-        ts = str(data.get("timestamp", ""))
-        dlink = tbox.get_dlink(fid, sign, ts)
+        try:
+            _refresh_if_needed(tbox, e, p)
+            data = tbox.resolve_share()
+            dlink, via, dnotes = _dlink_with_fallback(tbox, data, fid, name)
+        except core.TBoxError:
+            pass
     if not dlink:
-        raise HTTPException(403, "no download link (login required / expired) — re-login")
+        raise HTTPException(403, f"no download link ({via}: {json.dumps(dnotes, ensure_ascii=False)[:300]}) — re-login may help")
 
     req = urllib.request.Request(dlink, headers={
         "User-Agent": core.UA, "Referer": tbox.final_url,

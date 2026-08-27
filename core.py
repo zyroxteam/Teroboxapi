@@ -521,6 +521,64 @@ class TBox:
             return ""
         return d["dlink"]
 
+    def save_share_file(self, data, fid):
+        """Save a shared file into the account's own drive (folder '/').
+        TeraBox only issues dlinks for files that exist in YOUR drive.
+        Returns the raw json dict."""
+        form = {
+            "shareid": str(data.get("shareid", "")),
+            "from": str(data.get("uk", "")),
+            "to": "/",
+            "fidlist": json.dumps([int(fid)]),
+            "path": "/",
+            "sekey": data.get("randsk", ""),
+        }
+        s, out, _ = self._http(
+            "POST", f"https://{self.host}/share/transfer?{self.Q}",
+            data=urllib.parse.urlencode(form).encode(),
+            headers={"Content-Type": "application/x-www-form-urlencoded",
+                     "Origin": f"https://{self.host}"},
+            referer=self.final_url)
+        try:
+            return json.loads(out.decode("utf-8", "ignore"))
+        except Exception:
+            return {"errno": None, "http": s,
+                    "raw": out[:300].decode("utf-8", "ignore")}
+
+    def find_in_drive(self, name):
+        """fs_id of a file by name in the drive root (for errno-12 re-saves)."""
+        s, out, _ = self._http(
+            "GET", f"https://{self.host}/api/list?dir=%2F&web=1&{self.Q}",
+            headers={"Referer": self.final_url})
+        try:
+            r = json.loads(out.decode("utf-8", "ignore"))
+        except Exception:
+            return None
+        for it in r.get("list") or []:
+            if it.get("server_filename") == name:
+                return it.get("fs_id")
+        return None
+
+    def get_dlink_filemetas(self, fid):
+        """dlink for a file in the OWN drive via /api/filemetas."""
+        self.last_dlink_error = ""
+        s, out, _ = self._http(
+            "GET", f"https://{self.host}/api/filemetas?target={fid}&dlink=1&{self.Q}",
+            headers={"Referer": self.final_url})
+        try:
+            r = json.loads(out.decode("utf-8", "ignore"))
+        except Exception:
+            self.last_dlink_error = f"filemetas non-JSON (HTTP {s})"
+            return ""
+        if r.get("errno") != 0:
+            self.last_dlink_error = f"filemetas errno={r.get('errno')} {r.get('show_msg', '')}"
+            return ""
+        lst = r.get("list") or []
+        if not lst:
+            self.last_dlink_error = "filemetas: empty list"
+            return ""
+        return lst[0].get("dlink") or ""
+
 # ----------------------------------------------------------------------------
 # captcha solving (PIL + numpy)
 # ----------------------------------------------------------------------------
