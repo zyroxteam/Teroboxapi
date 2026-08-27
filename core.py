@@ -552,11 +552,16 @@ class TBox:
 
     def refresh_tokens(self):
         """Re-fetch the share page WITH session cookies — user APIs need a
-        jsToken minted for the logged-in session, not an anonymous one."""
+        jsToken minted for the logged-in session AND the account's region
+        host (dm.*), not an anonymous www one."""
         if not self.final_url:
             return False
+        target = self.final_url
+        if "surl=" in self.final_url:
+            surl = self.final_url.split("surl=")[-1].split("&")[0]
+            target = f"https://{self.api_host}/sharing/link?surl={surl}"
         try:
-            s, html, final = self._http("GET", self.final_url,
+            s, html, final = self._http("GET", target,
                                         headers={"Accept": "text/html"})
         except Exception:
             return False
