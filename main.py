@@ -513,7 +513,7 @@ def _resolve_with_creds(url: str, rec: dict, want_links: bool = True):
         files.append({
             "name": name,
             "size": size,
-            "size_human": core.fmt_size(size),
+            "size_human": core.fmt_size(int(size or 0)),
             "fs_id": fid,
             "dlink": dlink,
             **({"via": via} if dlink else {}),
