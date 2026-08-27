@@ -581,6 +581,11 @@ class TBox:
             self.js_token = tok
         if pcf:
             self.pcf_token = pcf
+        # Pin the whole TBox to the region host: share APIs (sign/randsk) and
+        # user APIs must agree on the account's cluster.
+        if tok and self.region_prefix and self.host != self.api_host:
+            self.host = self.api_host
+            self.final_url = target
         return bool(tok)
 
     def resolve_share(self):
