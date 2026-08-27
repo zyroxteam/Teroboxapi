@@ -485,34 +485,27 @@ def _resolve_with_creds(url: str, rec: dict, want_links: bool = True):
         tbox = TBox(url, host=rec.get("host") or None)
         _ensure_login(tbox, email, password, rec.get("ndus", ""),
                       rec.get("cookies"), rec.get("region_prefix", ""))
+        data = tbox.resolve_share()
     except core.TBoxError as e:
         raise HTTPException(502, f"terabox: {e}")
     lst = data.get("list") or []
     if not lst:
         raise HTTPException(404, "no files in this share")
-    sign = data.get("sign", "")
-    ts = str(data.get("timestamp", ""))
     files = []
     for it in lst:
         name = it.get("server_filename") or it.get("filename") or "file"
         fid = it.get("fs_id")
         size = it.get("size", 0)
-        dlink = tbox.get_dlink(fid, sign, ts) if want_links else ""
-        via = "direct" if dlink else ""
-        dnotes = {}
-        if want_links and not dlink and (email and password):
-            # cached ndus may be stale -> re-login on this host and retry once
-            try:
-                _refresh_if_needed(tbox, email, password)
-                rec["ndus"], rec["cookies"] = _cookie(tbox.jar, "ndus"), tbox.jar_dump()
-                data = tbox.resolve_share()
-                sign = data.get("sign", "")
-                ts = str(data.get("timestamp", ""))
-                dlink = tbox.get_dlink(fid, sign, ts)
-                via = "direct" if dlink else ""
-            except core.TBoxError:
-                pass
-        if want_links and not dlink:
+        dlink, via, dnotes = "", "", {}
+        if want_links:
+            if email and password:
+                try:
+                    _refresh_if_needed(tbox, email, password)
+                    rec["ndus"], rec["cookies"] = _cookie(tbox.jar, "ndus"), tbox.jar_dump()
+                    rec["region_prefix"] = getattr(tbox, "region_prefix", "") or rec.get("region_prefix", "")
+                    data = tbox.resolve_share()
+                except core.TBoxError:
+                    pass
             dlink, via, dnotes = _dlink_with_fallback(tbox, data, fid, name)
         files.append({
             "name": name,
