@@ -384,7 +384,9 @@ class TBox:
         s, out, _ = self._http("POST", f"https://{self.host}/passport/login?{self.Q}",
                                data=urllib.parse.urlencode(form), headers=h,
                                referer=self.final_url)
-        return json.loads(out.decode("utf-8", "ignore"))
+        resp = json.loads(out.decode("utf-8", "ignore"))
+        self._last_login_resp = resp
+        return resp
 
     def solve_captcha_once(self, relation_logid):
         """Fetch a slide challenge, solve it, submit. Returns (ok, token|msg)."""

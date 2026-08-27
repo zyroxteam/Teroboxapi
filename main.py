@@ -361,6 +361,20 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
     return {"http": s, "requested": full[:300], "body": body[:2000]}
 
 
+@app.post("/api/debug/login")
+def api_debug_login(req: LoginReq):
+    """Fresh login returning the RAW passport response + cookie names."""
+    try:
+        tbox = TBox(CANON_URL)
+        ok, msg = tbox.login_full(req.email, req.password)
+    except core.TBoxError as ex:
+        raise HTTPException(502, f"terabox: {ex}")
+    last = getattr(tbox, "_last_login_resp", None)
+    return {"ok": ok, "msg": msg,
+            "cookie_names": [c.name for c in tbox.jar],
+            "login_resp": last}
+
+
 @app.get("/api/debug/cookies")
 def api_debug_cookies(url: str = "", session_id: str = "",
                       email: str = "", password: str = ""):
