@@ -498,15 +498,18 @@ def _resolve_with_creds(url: str, rec: dict, want_links: bool = True):
         size = it.get("size", 0)
         dlink, via, dnotes = "", "", {}
         if want_links:
-            if email and password:
+            dlink, via, dnotes = _dlink_with_fallback(tbox, data, fid, name)
+            if not dlink and email and password:
+                # last resort: fresh login, re-resolve, retry the chain
                 try:
                     _refresh_if_needed(tbox, email, password)
-                    rec["ndus"], rec["cookies"] = _cookie(tbox.jar, "ndus"), tbox.jar_dump()
+                    rec["ndus"] = _cookie(tbox.jar, "ndus")
+                    rec["cookies"] = tbox.jar_dump()
                     rec["region_prefix"] = getattr(tbox, "region_prefix", "") or rec.get("region_prefix", "")
                     data = tbox.resolve_share()
-                except core.TBoxError:
-                    pass
-            dlink, via, dnotes = _dlink_with_fallback(tbox, data, fid, name)
+                    dlink, via, dnotes = _dlink_with_fallback(tbox, data, fid, name)
+                except Exception as ex:
+                    dnotes["refresh"] = str(ex)[:200]
         files.append({
             "name": name,
             "size": size,
