@@ -378,7 +378,7 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
         full = full.replace(k, v)
     s, out, _ = tbox._http("GET", full, headers={"Referer": tbox.final_url})
     body = out.decode("utf-8", "ignore")
-    return {"http": s, "requested": full[:300], "body": body[:2000]}
+    return {"http": s, "requested": full[:300], "body": body[:20000]}
 
 
 @app.post("/api/debug/login")
