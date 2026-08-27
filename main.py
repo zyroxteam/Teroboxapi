@@ -349,7 +349,8 @@ def api_debug_raw(url: str, path: str, extra: str = "", session_id: str = "",
     rec = _get_creds(session_id, email, password)
     e, p = rec.get("email", ""), rec.get("password", "")
     allowed = {"/share/list", "/api/list", "/api/filemetas", "/api/download",
-               "/file/get_new_download_url", "/share/verify", "/api/shorturlinfo"}
+               "/file/get_new_download_url", "/share/verify", "/api/shorturlinfo",
+               "/share/download"}
     if path not in allowed:
         raise HTTPException(400, f"path not allowed; one of {sorted(allowed)}")
     tbox = TBox(url, host=rec.get("host") or None)
